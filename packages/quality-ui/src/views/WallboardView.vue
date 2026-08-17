@@ -1,0 +1,27 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { formatRelativeTime } from "../composables";
+import { useQualityApi } from "../context";
+import type { ConnectionState } from "../composables";
+import type { WallboardData } from "../types";
+import MetricCard from "../components/MetricCard.vue";
+import QualityIcon from "../components/QualityIcon.vue";
+import ScoreGauge from "../components/ScoreGauge.vue";
+import StatusBadge from "../components/StatusBadge.vue";
+
+const api = useQualityApi(); const data = ref<WallboardData>(); const state = ref<ConnectionState>("loading"); const error = ref<string>(); const etag = ref<string>(); const now = ref(Date.now());
+let pollTimer: number | undefined; let clockTimer: number | undefined; let controller: AbortController | undefined;
+const age = computed(() => data.value ? now.value - new Date(data.value.generatedAt).getTime() : Infinity);
+const isStale = computed(() => age.value > 120_000 || state.value === "stale" || state.value === "error");
+const clock = computed(() => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(now.value));
+async function load(): Promise<void> { controller?.abort(); controller = new AbortController(); state.value = data.value ? "reconnecting" : "loading"; try { const result = await api.wallboard(controller.signal, etag.value); if (!result.unchanged) { data.value = result.data; etag.value = result.etag; } state.value = "fresh"; error.value = undefined; } catch (cause) { if (controller.signal.aborted) return; error.value = cause instanceof Error ? cause.message : "Connection unavailable"; state.value = data.value ? "stale" : "error"; } }
+onMounted(() => { void load(); pollTimer = window.setInterval(load, 20_000); clockTimer = window.setInterval(() => { now.value = Date.now(); }, 1_000); });
+onBeforeUnmount(() => { controller?.abort(); window.clearInterval(pollTimer); window.clearInterval(clockTimer); });
+</script>
+
+<template><main class="wallboard" :class="{ 'wallboard-stale': isStale }">
+  <header class="wallboard-header"><div class="wallboard-brand"><span class="brand-mark">♡</span><div><strong>Mumsio</strong><span>System Quality</span></div></div><div class="wallboard-connection" :class="state"><span class="environment-dot"/>{{ isStale ? 'DATA STALE' : state === 'reconnecting' ? 'REFRESHING' : 'LIVE' }}</div><time>{{ clock }}</time></header>
+  <div v-if="state === 'loading'" class="wallboard-loading"><span class="spinner"/><strong>Connecting to Quality Center</strong></div>
+  <div v-else-if="state === 'error' && !data" class="wallboard-loading error"><QualityIcon name="alert" :size="48"/><strong>Quality data unavailable</strong><span>{{ error }}</span><button class="button secondary" @click="load">Retry connection</button></div>
+  <template v-else-if="data"><div v-if="isStale" class="stale-overlay" role="alert"><QualityIcon name="alert" :size="28"/><div><strong>QUALITY DATA IS STALE</strong><span>Last successful update {{ formatRelativeTime(data.generatedAt) }}. Current system status cannot be confirmed.</span></div></div><section class="wallboard-hero"><div><span class="wallboard-eyebrow">Overall quality score</span><h1>{{ data.overallScore >= 90 ? 'Systems are healthy' : data.overallScore >= 75 ? 'Attention recommended' : 'Action required' }}</h1><p>Updated {{ formatRelativeTime(data.generatedAt) }}</p></div><ScoreGauge :score="data.overallScore"/><StatusBadge :status="data.status"/></section><section class="wallboard-dimensions"><MetricCard v-for="dimension in data.dimensions" :key="dimension.id" :dimension="dimension"/></section><section class="wallboard-bottom"><article><div class="wallboard-section-title"><QualityIcon name="monitor"/><span>System status</span></div><div class="system-grid"><div v-for="system in data.systems" :key="system.id"><span class="system-status" :class="system.status"/><span><strong>{{ system.name }}</strong><small>{{ system.status }}<template v-if="system.response"> · {{ system.response }}</template></small></span></div></div></article><article class="wallboard-run"><div class="wallboard-section-title"><QualityIcon name="history"/><span>{{ data.activeRun ? 'Active test' : 'Latest test' }}</span></div><template v-if="data.activeRun"><strong>{{ data.activeRun.displayName }}</strong><span>{{ data.activeRun.environment }} · {{ data.activeRun.progress ?? 0 }}%</span><div class="progress-track"><span :style="{ width: `${data.activeRun.progress ?? 4}%` }"/></div></template><template v-else-if="data.latestRun"><strong>{{ data.latestRun.displayName }}</strong><span>{{ data.latestRun.environment }} · Score {{ data.latestRun.score ?? '—' }}</span><StatusBadge :status="data.latestRun.status"/></template><span v-else>No recent tests</span></article><article class="wallboard-security"><div class="wallboard-section-title"><QualityIcon name="shield"/><span>Open security findings</span></div><div class="wallboard-severity"><div class="severity-critical"><strong>{{ data.openFindings.critical }}</strong><span>Critical</span></div><div class="severity-high"><strong>{{ data.openFindings.high }}</strong><span>High</span></div><div class="severity-medium"><strong>{{ data.openFindings.medium }}</strong><span>Medium</span></div><div class="severity-low"><strong>{{ data.openFindings.low }}</strong><span>Low</span></div></div></article></section></template>
+</main></template>
